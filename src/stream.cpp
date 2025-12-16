@@ -1,7 +1,6 @@
 // Create a GStreamer pipeline to stream a video through our plugin
 
 #include <gst/gst.h>
-#include <format>
 #include "gstfilter.h"
 #include "argh.h"
 
