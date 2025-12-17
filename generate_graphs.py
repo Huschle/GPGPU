@@ -262,7 +262,6 @@ ax4.text(0.1, 0.9, metrics_text, transform=ax4.transAxes,
 
 plt.suptitle('Vue d\'Ensemble des Performances GPGPU', fontweight='bold', fontsize=16, y=0.98)
 plt.savefig('graph_overview.png', dpi=300, bbox_inches='tight')
-print("   ✓ graph_overview.png créé")
 plt.close()
 
 print("GRAPHIQUES GÉNÉRÉS AVEC SUCCÈS!")
