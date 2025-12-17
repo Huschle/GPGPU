@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script de génération automatique des graphiques pour le rapport GPGPU
+Utilitaire de génération de graphiques pour l'analyse des performances.
 """
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -12,11 +12,9 @@ plt.rcParams['axes.labelsize'] = 12
 plt.rcParams['axes.titlesize'] = 14
 plt.rcParams['figure.dpi'] = 300
 
-print("🎨 Génération des graphiques...")
+print("Génération des graphiques...")
 
-# ============================================================================
 # Graphique 1: Distribution de la charge par kernel (Bar Chart)
-# ============================================================================
 print("\n[1/5] Distribution des kernels...")
 df_kernels = pd.read_csv('data_kernels.csv')
 
@@ -42,9 +40,7 @@ plt.savefig('graph_kernels.png', dpi=300, bbox_inches='tight')
 print("   ✓ graph_kernels.png créé")
 plt.close()
 
-# ============================================================================
 # Graphique 2: Performance vs Résolution (Dual-axis)
-# ============================================================================
 print("[2/5] Performance vs résolution...")
 df_perf = pd.read_csv('data_performance.csv')
 
@@ -86,9 +82,7 @@ plt.savefig('graph_scalability.png', dpi=300, bbox_inches='tight')
 print("   ✓ graph_scalability.png créé")
 plt.close()
 
-# ============================================================================
 # Graphique 3: Utilisation GPU dans le temps (Multi-panel)
-# ============================================================================
 print("[3/5] Utilisation GPU temporelle...")
 df_gpu = pd.read_csv('data_gpu_usage.csv')
 
@@ -135,10 +129,8 @@ plt.savefig('graph_gpu_usage.png', dpi=300, bbox_inches='tight')
 print("   ✓ graph_gpu_usage.png créé")
 plt.close()
 
-# ============================================================================
 # Graphique 4: Efficacité Mémoire (Scatter)
-# ============================================================================
-print("[4/5] Efficacité mémoire...")
+print("[4/5] Efficacité mémoire")
 df_perf['MB_per_Mpixel'] = df_perf['Memory_MB'] / (df_perf['Pixels'] / 1e6)
 
 fig, ax = plt.subplots(figsize=(9, 6))
@@ -164,9 +156,7 @@ plt.savefig('graph_memory_efficiency.png', dpi=300, bbox_inches='tight')
 print("   ✓ graph_memory_efficiency.png créé")
 plt.close()
 
-# ============================================================================
 # Graphique 5: Projection Scalabilité Théorique
-# ============================================================================
 print("[5/5] Projection scalabilité...")
 df_scale = pd.read_csv('data_scalability.csv')
 
@@ -203,9 +193,7 @@ plt.savefig('graph_theoretical_scalability.png', dpi=300, bbox_inches='tight')
 print("   ✓ graph_theoretical_scalability.png créé")
 plt.close()
 
-# ============================================================================
 # BONUS: Graphique combiné - Vue d'ensemble
-# ============================================================================
 print("[BONUS] Vue d'ensemble synthétique...")
 fig = plt.figure(figsize=(14, 10))
 gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
@@ -277,17 +265,4 @@ plt.savefig('graph_overview.png', dpi=300, bbox_inches='tight')
 print("   ✓ graph_overview.png créé")
 plt.close()
 
-print("\n" + "="*60)
-print("✅ TOUS LES GRAPHIQUES GÉNÉRÉS AVEC SUCCÈS!")
-print("="*60)
-print("\nFichiers créés:")
-print("  1. graph_kernels.png - Distribution charge computationnelle")
-print("  2. graph_scalability.png - FPS et mémoire vs résolution")
-print("  3. graph_gpu_usage.png - Timeline utilisation GPU")
-print("  4. graph_memory_efficiency.png - Efficacité mémoire")
-print("  5. graph_theoretical_scalability.png - Projection multi-résolution")
-print("  6. graph_overview.png - Vue d'ensemble synthétique")
-print("\nUtilisation:")
-print("  - Intégration LaTeX: \\includegraphics[width=0.8\\textwidth]{graph_*.png}")
-print("  - Markdown: ![Description](graph_*.png)")
-print("="*60)
+print("GRAPHIQUES GÉNÉRÉS AVEC SUCCÈS!")

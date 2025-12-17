@@ -1,7 +1,7 @@
-# Soustraction de Fond Temps Réel par GPGPU
-## Parallélisation CUDA d'un Algorithme de Background Subtraction
+# Soustraction de Fond Temps Réel
+## Implémentation CUDA d'un Algorithme de Background Subtraction
 
-**Auteur:** TIDJK  
+**Auteur:** Khatir Youyou, Tidjani Adam Kandine, Lucas Juanico (SCIA 2026)  
 **Date:** Décembre 2025
 
 ---
@@ -20,9 +20,9 @@ La soustraction de fond (background subtraction) est une technique fondamentale 
 Implémenter et optimiser un pipeline complet de soustraction de fond utilisant CUDA pour traiter des flux vidéo en temps réel.
 
 ### 1.2 Contraintes
-- ✓ Résultats qualitatifs **acceptables**
-- ✓ Maximisation du **framerate**
-- ✓ Utilisation efficace des ressources GPU
+- Résultats qualitatifs acceptables
+- Maximisation du framerate
+- Utilisation efficace des ressources GPU
 
 ---
 
@@ -159,13 +159,13 @@ Implémentation séquentielle en C++:
 
 #### 4.3.2 Utilisation Ressources GPU
 
-| Métrique | Valeur | Cible | État |
-|----------|--------|-------|------|
-| SM Utilization | **95%** | >80% | ✓ Excellent |
-| Memory Utilization | 35% | >50% | △ Acceptable |
-| Température | 85-89°C | <95°C | ✓ Optimal |
-| Puissance | 53-65W | <80W | ✓ Normal |
-| Mémoire utilisée | 1031-1537 MB | <6144 MB | ✓ Efficace |
+| Métrique | Valeur | Cible | Évaluation |
+|----------|--------|-------|------------|
+| SM Utilization | 95% | >80% | Excellent |
+| Memory Utilization | 35% | >50% | Acceptable |
+| Température | 85-89°C | <95°C | Optimal |
+| Puissance | 53-65W | <80W | Normal |
+| Mémoire utilisée | 1031-1537 MB | <6144 MB | Efficace |
 
 #### 4.3.3 Consommation Mémoire par Résolution
 
@@ -242,8 +242,8 @@ Mesure via `nvidia-smi dmon` pendant exécution :
 
 | Phase | Temps | % | Problème | Impact |
 |-------|-------|---|----------|--------|
-| **Hystérésis itérative** | 50ms | 25% | Convergence séquentielle | ⚠️ **Majeur** |
-| **Reservoir sampling** | 72ms | 36% | Calculs atomiques implicites | ⚠️ **Majeur** |
+| **Hystérésis itérative** | 50ms | 25% | Convergence séquentielle | **Majeur** |
+| **Reservoir sampling** | 72ms | 36% | Calculs atomiques implicites | **Majeur** |
 | Transferts mémoire | 16ms | 8% | PCIe Gen3 limité | △ Mineur |
 | Morphologie | 54ms | 27% | Accès mémoire non coalescés | △ Mineur |
 | Overlay | 8ms | 4% | Aucun | ✓ OK |
@@ -268,13 +268,13 @@ Mesure via `nvidia-smi dmon` pendant exécution :
 
 | Critère | Score | Méthode d'évaluation |
 |---------|-------|---------------------|
-| **Détection objets** | ✓ Excellent | Visual inspection - objets mobiles détectés |
-| **Réduction bruit** | ✓ Bon | Morphologie élimine >90% faux positifs |
-| **Netteté contours** | ✓ Excellent | Hystérésis préserve continuité |
-| **Stabilité temporelle** | ✓ Bon | Reservoir sampling réduit flickering |
-| **Faux positifs** | △ Acceptable | <5% pixels sur fond statique |
+| Détection objets | Excellent | Visual inspection - objets mobiles détectés |
+| Réduction bruit | Bon | Morphologie élimine >90% faux positifs |
+| Netteté contours | Excellent | Hystérésis préserve continuité |
+| Stabilité temporelle | Bon | Reservoir sampling réduit flickering |
+| Faux positifs | Acceptable | <5% pixels sur fond statique |
 
-**Conclusion** : Résultats qualitatifs **ACCEPTABLES** ✓
+Les résultats qualitatifs sont conformes aux objectifs fixés.
 
 #### 4.6.2 Scalabilité par Résolution
 
@@ -313,19 +313,19 @@ Efficacité = 2.4 / 12700 = 0.019% du pic théorique
 
 | Critère | Objectif | Résultat | Statut |
 |---------|----------|----------|--------|
-| Résultats acceptables | Qualitatif OK | ✓ Détection fiable | ✓ **VALIDÉ** |
-| Maximisation FPS | Max possible | 20 FPS @ Full HD | ✓ **VALIDÉ** |
-| Utilisation GPU | >80% | **95%** SM usage | ✓ **DÉPASSÉ** |
-| Stabilité | Pas de crash | 0 erreur CUDA | ✓ **VALIDÉ** |
-| Scalabilité | Multi-résolution | Testé 2 formats | ✓ **VALIDÉ** |
+| Résultats acceptables | Qualitatif OK | Détection fiable | Validé |
+| Maximisation FPS | Max possible | 20 FPS @ Full HD | Validé |
+| Utilisation GPU | >80% | 95% SM usage | Dépassé |
+| Stabilité | Pas de crash | 0 erreur CUDA | Validé |
+| Scalabilité | Multi-résolution | Testé 2 formats | Validé |
 
 ### 5.2 Points Forts Quantifiés
 
-1. **Haute utilisation GPU** : 95% SM → Excellent parallélisme
-2. **Scalabilité** : +93% pixels = +35% temps (sous-linéaire ✓)
-3. **Stabilité thermique** : 89°C stable (pas de throttling)
-4. **Efficacité mémoire** : 1.5 GB pour 2M pixels (743 Mo/Mpixel)
-5. **Robustesse** : 0 erreur CUDA sur 638 frames traitées
+1. Haute utilisation GPU : 95% SM indiquant un excellent parallélisme
+2. Scalabilité sous-linéaire : +93% pixels entraîne +35% temps
+3. Stabilité thermique : 89°C stable sans throttling
+4. Efficacité mémoire : 1.5 GB pour 2M pixels (743 Mo/Mpixel)
+5. Robustesse : aucune erreur CUDA sur 638 frames traitées
 
 ### 5.3 Limitations Quantifiées et Solutions
 
@@ -397,17 +397,17 @@ Ce projet démontre la **faisabilité d'une implémentation GPU complète** d'un
 
 | Objectif | Métrique Cible | Résultat Mesuré | Validation |
 |----------|----------------|-----------------|------------|
-| Résultats acceptables | Qualitatif | ✓ Détection fiable | ✓ **100%** |
-| Framerate max | Max possible | 20.35 FPS @ 1080p | ✓ **100%** |
-| Utilisation GPU | >80% | 95% SM utilization | ✓ **119%** |
+| Résultats acceptables | Qualitatif | Détection fiable | 100% |
+| Framerate max | Max possible | 20.35 FPS @ 1080p | 100% |
+| Utilisation GPU | >80% | 95% SM utilization | 119% |
 
 ### 6.2 Contributions Principales
 
-1. **Pipeline CUDA complet** : 7 kernels optimisés, 0 erreur
-2. **Scalabilité démontrée** : +93% pixels → +35% temps (sous-linéaire)
-3. **Haute utilisation GPU** : 95% SM (vs 60-70% typique)
-4. **Robustesse** : 638 frames traitées sans échec
-5. **Documentation quantitative** : 15+ métriques de performance
+1. Pipeline CUDA complet avec 7 kernels optimisés sans erreur d'exécution
+2. Scalabilité sous-linéaire démontrée : +93% pixels pour +35% temps
+3. Utilisation GPU de 95% SM, supérieure aux 60-70% typiques
+4. Robustesse validée sur 638 frames traitées sans échec
+5. Documentation quantitative avec plus de 15 métriques de performance
 
 ### 6.3 Résultats Chiffrés
 
@@ -443,9 +443,9 @@ Comparaison CPU :
 ### 7.1 Motivation et Objectifs
 
 Suite aux résultats baseline (19.97 FPS sur ACET), implémentation d'optimisations CUDA pour:
-- ✓ Réduire accès mémoire globale via **shared memory**
-- ✓ Améliorer memory coalescing via **SoA layout**
-- ✓ **Atteindre temps réel (30 FPS)**
+- Réduire les accès mémoire globale via shared memory
+- Améliorer le memory coalescing via SoA layout
+- Atteindre le temps réel (30 FPS)
 
 ### 7.2 Techniques Implémentées
 
@@ -518,13 +518,13 @@ struct ReservoirSoA {
 
 | Version | Temps | FPS | Speedup | Amélioration |
 |---------|-------|-----|---------|-------------|
-| **Baseline** | 13.42s | 19.97 | 1.00× | - |
-| **Optimized (run 1)** | 8.24s | 32.52 | 1.63× | **+63%** |
-| **Optimized (run 2)** | 7.34s | 36.51 | 1.83× | **+83%** |
-| **Optimized (run 3)** | 7.58s | 35.36 | 1.77× | **+77%** |
-| **Optimized (moyenne)** | **7.72s** | **34.72** | **1.74×** | **+74%** |
+| Baseline | 13.42s | 19.97 | 1.00× | - |
+| Optimized (run 1) | 8.24s | 32.52 | 1.63× | +63% |
+| Optimized (run 2) | 7.34s | 36.51 | 1.83× | +83% |
+| Optimized (run 3) | 7.58s | 35.36 | 1.77× | +77% |
+| Optimized (moyenne) | 7.72s | 34.72 | 1.74× | +74% |
 
-**✅ TEMPS RÉEL ATTEINT : 34.72 FPS > 30 FPS**
+Le temps réel est atteint avec 34.72 FPS, dépassant l'objectif de 30 FPS.
 
 ![Analyse des optimisations](graph_optimizations.png)
 *Figure 7 : Comparaison baseline vs optimisé - FPS, speedup, utilisation SM, et contribution par technique*
@@ -551,24 +551,24 @@ struct ReservoirSoA {
 
 ### 7.4 Validation
 
-**Objectif initial** : Maximiser framerate avec résultats acceptables
+L'objectif initial était de maximiser le framerate avec des résultats acceptables.
 
-**Résultats** :
-- ✅ Baseline : 19.97 FPS (objectif atteint)
-- ✅ **Optimisé : 34.72 FPS (temps réel dépassé!)**
-- ✅ Qualité préservée (détection identique)
-- ✅ 0 erreur CUDA (stabilité)
+Résultats obtenus :
+- Baseline : 19.97 FPS (objectif atteint)
+- Optimisé : 34.72 FPS (temps réel dépassé)
+- Qualité préservée (détection identique)
+- Stabilité confirmée (0 erreur CUDA)
 
-**Contribution scientifique** :
+Contribution scientifique :
 1. Démonstration empirique de l'impact shared memory (+80% morphologie)
 2. Validation SoA pour memory coalescing (+80% reservoir)
 3. Atteinte temps réel sur GPU mid-range (RTX 3060)
 
 ### 7.5 Limitations et Investigation Régression Full HD
 
-**Régression observée** : Version optimisée plus lente sur Full HD (-14%)
+Une régression a été observée sur Full HD avec la version optimisée (-14%) :
 - Baseline : 18.18s (20.35 FPS, 95% SM) 
-- Optimisé : 21.11s (17.52 FPS, 32% SM) ⚠️
+- Optimisé : 21.11s (17.52 FPS, 32% SM)
 
 **Cause racine identifiée** : `atomicOr` dans `hysteresis_propagate_kernel`
 - **Impact** : SM usage 95% → 32% (GPU idle 66%), +2.22s (~10.5% temps)
@@ -612,93 +612,18 @@ nvidia-smi dmon -c 10  # Monitoring temps réel
 
 ### 8.6 Conclusion Finale
 
-Le code **atteint et dépasse largement les objectifs fixés** :
+L'implémentation atteint et dépasse les objectifs fixés :
 
-✓ **Résultats acceptables** : Détection fiable, <5% faux positifs  
-✓ **Framerate maximisé** : **34.72 FPS (temps réel dépassé!)**
-✓ **Optimisations validées** : +74% performance via shared memory + SoA
-✓ **Scalable** : Traite 776×1380 et 1920×1080 efficacement  
-✓ **Robuste** : 0 crash CUDA, thermiquement stable  
+- Résultats acceptables : Détection fiable avec moins de 5% de faux positifs  
+- Framerate maximisé : 34.72 FPS en version optimisée, dépassant le temps réel
+- Optimisations validées : +74% de performance via shared memory et SoA
+- Scalabilité démontrée : Traite efficacement 776×1380 et 1920×1080  
+- Robustesse confirmée : Aucun crash CUDA, stabilité thermique maintenue  
 
-**Impact** : Démontre que GPGPU rend possible des tâches impossibles en CPU, et que les optimisations CUDA avancées (shared memory, SoA) apportent des gains significatifs mesurables, validant l'approche parallèle pour vision par ordinateur temps réel.
+Ce projet démontre que le GPGPU rend possibles des tâches inaccessibles au CPU, et que les optimisations CUDA avancées (shared memory, SoA) apportent des gains significatifs mesurables, validant l'approche parallèle pour la vision par ordinateur temps réel.
 
-**Résultats chiffrés finaux** :
-- Baseline GPU : 19.97 FPS (1.74× speedup vs optimisé)
-- **Optimisé GPU : 34.72 FPS (16% au-dessus temps réel)**
-- CPU : Échec (timeout)
-- **Speedup total CPU→GPU optimisé : Infini (impossible→possible+temps réel)**
-
----
-
-## Annexe A : Données pour Graphiques
-
-### A.1 Performance vs Résolution
-
-```csv
-Resolution,Pixels,Time_GPU_s,FPS_GPU,Memory_MB
-776x1380,1070880,13.42,19.97,1031
-1920x1080,2073600,18.18,20.35,1537
-```
-
-### A.2 Distribution Charge par Kernel
-
-```csv
-Kernel,Operations_M,Percent,Time_ms
-update_reservoir,207.4,40,72
-erosion,58.1,15,27
-dilation,58.1,15,27
-hysteresis,103.7,25,50
-overlay,4.1,5,8
-```
-
-### A.3 Utilisation GPU dans le Temps
-
-```csv
-Time_s,SM_percent,Mem_percent,Temp_C,Power_W
-1,85,30,75,48
-2,95,35,82,58
-3,95,35,87,63
-4,95,35,89,65
-5,95,35,89,65
-```
-
-### A.4 Scalabilité Théorique
-
-```csv
-Resolution,Pixels_M,Ops_M,Time_Theoretical_ms,FPS_Theoretical
-640x480,0.31,89.4,36,27.8
-1280x720,0.92,265.4,107,9.3
-1920x1080,2.07,596.9,241,4.1
-3840x2160,8.29,2387.5,964,1.0
-```
-
-**Graphiques suggérés** :
-1. Bar chart : Distribution charge par kernel (40% reservoir, 25% hysteresis)
-2. Line chart : FPS vs Résolution (scalabilité)
-3. Stacked area : Profil utilisation GPU dans le temps
-4. Scatter : Mémoire GPU vs Pixels (efficacité)
-
----
-
-## Annexe : Validation Expérimentale
-
-### Vérification GPU Active
-
-```bash
-$ build/stream --mode=gpu samples/ACET.mp4 --output=/tmp/gpu.mp4
-
-=== CUDA GPU Mode ===
-Using GPU: NVIDIA GeForce RTX 3060 Laptop GPU
-Compute Capability: 8.6
-Image size: 776x1380
-GPU kernels initialized successfully
-```
-
-### Monitoring Temps Réel
-
-```bash
-$ nvidia-smi dmon -c 1
-# gpu    pwr  gtemp  mtemp     sm    mem    enc    dec
-# Idx      W      C      C      %      %      %      %
-    0     65     89      -     95     35      0      0
-```
+Résultats chiffrés finaux :
+- Baseline GPU : 19.97 FPS
+- Optimisé GPU : 34.72 FPS (16% au-dessus du temps réel)
+- CPU : Échec par timeout
+- Speedup total : Passage d'une tâche impossible en CPU à un traitement temps réel en GPU
