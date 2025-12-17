@@ -3,6 +3,7 @@
 #include "logo.h"
 #include <cuda_runtime.h>
 #include <curand_kernel.h>
+#include <cstdio>
 
 #define RESERVOIR_K 3
 #define RGB_DIFF_THRESHOLD 30
@@ -10,6 +11,26 @@
 #define MORPH_RADIUS 3
 #define HYST_LOW 4
 #define HYST_HIGH 30
+
+// CUDA error checking macro
+#define CUDA_CHECK(call) \
+    do { \
+        cudaError_t err = call; \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA Error at %s:%d - %s\n", __FILE__, __LINE__, \
+                    cudaGetErrorString(err)); \
+            exit(EXIT_FAILURE); \
+        } \
+    } while(0)
+
+#define CUDA_CHECK_KERNEL() \
+    do { \
+        cudaError_t err = cudaGetLastError(); \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA Kernel Error at %s:%d - %s\n", __FILE__, __LINE__, \
+                    cudaGetErrorString(err)); \
+        } \
+    } while(0)
 
 struct Reservoir {
     rgb8 color;
@@ -30,25 +51,25 @@ struct GpuContext {
         if (width == w && height == h) return;
         
         // Free old buffers
-        if (reservoir_state) cudaFree(reservoir_state);
-        if (diff_map) cudaFree(diff_map);
-        if (morph_temp) cudaFree(morph_temp);
-        if (morph_dest) cudaFree(morph_dest);
-        if (final_mask) cudaFree(final_mask);
-        if (rand_states) cudaFree(rand_states);
+        if (reservoir_state) CUDA_CHECK(cudaFree(reservoir_state));
+        if (diff_map) CUDA_CHECK(cudaFree(diff_map));
+        if (morph_temp) CUDA_CHECK(cudaFree(morph_temp));
+        if (morph_dest) CUDA_CHECK(cudaFree(morph_dest));
+        if (final_mask) CUDA_CHECK(cudaFree(final_mask));
+        if (rand_states) CUDA_CHECK(cudaFree(rand_states));
         
         width = w;
         height = h;
         
-        cudaMalloc(&reservoir_state, w * h * RESERVOIR_K * sizeof(Reservoir));
-        cudaMalloc(&diff_map, w * h * sizeof(uint8_t));
-        cudaMalloc(&morph_temp, w * h * sizeof(uint8_t));
-        cudaMalloc(&morph_dest, w * h * sizeof(uint8_t));
-        cudaMalloc(&final_mask, w * h * sizeof(uint8_t));
-        cudaMalloc(&rand_states, w * h * sizeof(curandState));
+        CUDA_CHECK(cudaMalloc(&reservoir_state, w * h * RESERVOIR_K * sizeof(Reservoir)));
+        CUDA_CHECK(cudaMalloc(&diff_map, w * h * sizeof(uint8_t)));
+        CUDA_CHECK(cudaMalloc(&morph_temp, w * h * sizeof(uint8_t)));
+        CUDA_CHECK(cudaMalloc(&morph_dest, w * h * sizeof(uint8_t)));
+        CUDA_CHECK(cudaMalloc(&final_mask, w * h * sizeof(uint8_t)));
+        CUDA_CHECK(cudaMalloc(&rand_states, w * h * sizeof(curandState)));
         
         // Initialize reservoirs to zero
-        cudaMemset(reservoir_state, 0, w * h * RESERVOIR_K * sizeof(Reservoir));
+        CUDA_CHECK(cudaMemset(reservoir_state, 0, w * h * RESERVOIR_K * sizeof(Reservoir)));
     }
     
     ~GpuContext() {
@@ -298,6 +319,18 @@ void compute_cu(ImageView<rgb8> in)
 {
     static bool initialized = false;
     
+    // Print GPU info on first run
+    if (!initialized) {
+        int device;
+        cudaDeviceProp prop;
+        CUDA_CHECK(cudaGetDevice(&device));
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, device));
+        printf("=== CUDA GPU Mode ===\n");
+        printf("Using GPU: %s\n", prop.name);
+        printf("Compute Capability: %d.%d\n", prop.major, prop.minor);
+        printf("Image size: %dx%d\n", in.width, in.height);
+    }
+    
     g_gpu_ctx.resize(in.width, in.height);
     
     dim3 block(16, 16);
@@ -306,63 +339,71 @@ void compute_cu(ImageView<rgb8> in)
     // Initialize random states on first run
     if (!initialized) {
         init_rand_kernel<<<grid, block>>>(g_gpu_ctx.rand_states, in.width, in.height, time(NULL));
-        cudaDeviceSynchronize();
+        CUDA_CHECK_KERNEL();
+        CUDA_CHECK(cudaDeviceSynchronize());
+        printf("GPU kernels initialized successfully\n");
         initialized = true;
     }
     
     // Copy input image to device
     Image<rgb8> device_in(in.width, in.height, true);
-    cudaMemcpy2D(device_in.buffer, device_in.stride, in.buffer, in.stride, 
-                 in.width * sizeof(rgb8), in.height, cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy2D(device_in.buffer, device_in.stride, in.buffer, in.stride, 
+                 in.width * sizeof(rgb8), in.height, cudaMemcpyHostToDevice));
     
     // 1. Update reservoirs and compute difference map
     update_reservoir_kernel<<<grid, block>>>(
         device_in, g_gpu_ctx.reservoir_state, g_gpu_ctx.diff_map,
         g_gpu_ctx.rand_states, in.width, in.height
     );
+    CUDA_CHECK_KERNEL();
     
     // 2. Morphological operations: erosion
     erosion_kernel<<<grid, block>>>(
         g_gpu_ctx.diff_map, g_gpu_ctx.morph_temp, in.width, in.height
     );
+    CUDA_CHECK_KERNEL();
     
     // 3. Morphological operations: dilation
     dilation_kernel<<<grid, block>>>(
         g_gpu_ctx.morph_temp, g_gpu_ctx.morph_dest, in.width, in.height
     );
+    CUDA_CHECK_KERNEL();
     
     // 4. Initialize hysteresis mask
     init_hysteresis_kernel<<<grid, block>>>(
         g_gpu_ctx.morph_dest, g_gpu_ctx.final_mask, in.width, in.height
     );
+    CUDA_CHECK_KERNEL();
     
     // 5. Hysteresis propagation (iterative)
     int* d_changed;
     int h_changed = 1;
-    cudaMalloc(&d_changed, sizeof(int));
+    CUDA_CHECK(cudaMalloc(&d_changed, sizeof(int)));
     
     // Iterate until no changes
     int max_iterations = 100;
     for (int iter = 0; iter < max_iterations && h_changed; ++iter) {
         h_changed = 0;
-        cudaMemcpy(d_changed, &h_changed, sizeof(int), cudaMemcpyHostToDevice);
+        CUDA_CHECK(cudaMemcpy(d_changed, &h_changed, sizeof(int), cudaMemcpyHostToDevice));
         
         hysteresis_propagate_kernel<<<grid, block>>>(
             g_gpu_ctx.morph_dest, g_gpu_ctx.final_mask, d_changed, in.width, in.height
         );
+        CUDA_CHECK_KERNEL();
         
-        cudaMemcpy(&h_changed, d_changed, sizeof(int), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(&h_changed, d_changed, sizeof(int), cudaMemcpyDeviceToHost));
     }
-    cudaFree(d_changed);
+    CUDA_CHECK(cudaFree(d_changed));
     
     // 6. Apply red overlay to input image
     apply_overlay_kernel<<<grid, block>>>(
         device_in, g_gpu_ctx.final_mask, in.width, in.height
     );
+    CUDA_CHECK_KERNEL();
     
     // Copy result back to host
-    cudaMemcpy2D(in.buffer, in.stride, device_in.buffer, device_in.stride, 
-                 in.width * sizeof(rgb8), in.height, cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy2D(in.buffer, in.stride, device_in.buffer, device_in.stride, 
+                 in.width * sizeof(rgb8), in.height, cudaMemcpyDeviceToHost));
     
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaDeviceSynchronize());
 }

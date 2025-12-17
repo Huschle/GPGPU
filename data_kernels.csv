@@ -1,0 +1,6 @@
+Kernel,Operations_M,Percent,Time_ms,Ops_per_pixel
+update_reservoir,207.4,40,72,100
+erosion,58.1,15,27,28
+dilation,58.1,15,27,28
+hysteresis,103.7,25,50,50
+overlay,4.1,5,8,2

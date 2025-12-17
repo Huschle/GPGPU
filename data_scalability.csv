@@ -1,0 +1,5 @@
+Resolution,Width,Height,Pixels_M,Ops_M,Time_Theoretical_ms,FPS_Theoretical,Category
+VGA,640,480,0.31,89.4,36,27.8,Low
+HD,1280,720,0.92,265.4,107,9.3,Medium
+Full HD,1920,1080,2.07,596.9,241,4.1,High
+4K,3840,2160,8.29,2387.5,964,1.0,Ultra

@@ -1,0 +1,3 @@
+Resolution,Width,Height,Pixels,Time_GPU_s,FPS_GPU,Memory_MB,Frames,Throughput_Mpixels_s
+776x1380,776,1380,1070880,13.42,19.97,1031,268,79.8
+1920x1080,1920,1080,2073600,18.18,20.35,1537,370,114.0
