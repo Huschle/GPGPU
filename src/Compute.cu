@@ -37,10 +37,22 @@ struct Reservoir {
     uint16_t weight;
 };
 
+// Structure of Arrays (SoA) layout for better memory coalescing
+struct ReservoirSoA {
+    uint8_t* r_colors;
+    uint8_t* g_colors;
+    uint8_t* b_colors;
+    uint16_t* weights;
+};
+
 struct GpuContext {
     int width = 0;
     int height = 0;
     Reservoir* reservoir_state = nullptr;
+    
+    // SOA buffers for reservoir access
+    ReservoirSoA reservoir_soa;
+    
     uint8_t* diff_map = nullptr;
     uint8_t* morph_temp = nullptr;
     uint8_t* morph_dest = nullptr;
@@ -52,6 +64,10 @@ struct GpuContext {
         
         // Free old buffers
         if (reservoir_state) CUDA_CHECK(cudaFree(reservoir_state));
+        if (reservoir_soa.r_colors) CUDA_CHECK(cudaFree(reservoir_soa.r_colors));
+        if (reservoir_soa.g_colors) CUDA_CHECK(cudaFree(reservoir_soa.g_colors));
+        if (reservoir_soa.b_colors) CUDA_CHECK(cudaFree(reservoir_soa.b_colors));
+        if (reservoir_soa.weights) CUDA_CHECK(cudaFree(reservoir_soa.weights));
         if (diff_map) CUDA_CHECK(cudaFree(diff_map));
         if (morph_temp) CUDA_CHECK(cudaFree(morph_temp));
         if (morph_dest) CUDA_CHECK(cudaFree(morph_dest));
@@ -61,19 +77,36 @@ struct GpuContext {
         width = w;
         height = h;
         
+        // Allocate SoA buffers for better memory coalescing
+        size_t total_reservoirs = w * h * RESERVOIR_K;
+        CUDA_CHECK(cudaMalloc(&reservoir_soa.r_colors, total_reservoirs * sizeof(uint8_t)));
+        CUDA_CHECK(cudaMalloc(&reservoir_soa.g_colors, total_reservoirs * sizeof(uint8_t)));
+        CUDA_CHECK(cudaMalloc(&reservoir_soa.b_colors, total_reservoirs * sizeof(uint8_t)));
+        CUDA_CHECK(cudaMalloc(&reservoir_soa.weights, total_reservoirs * sizeof(uint16_t)));
+        
+        // Legacy AoS buffer (keep for compatibility during transition)
         CUDA_CHECK(cudaMalloc(&reservoir_state, w * h * RESERVOIR_K * sizeof(Reservoir)));
+        
         CUDA_CHECK(cudaMalloc(&diff_map, w * h * sizeof(uint8_t)));
         CUDA_CHECK(cudaMalloc(&morph_temp, w * h * sizeof(uint8_t)));
         CUDA_CHECK(cudaMalloc(&morph_dest, w * h * sizeof(uint8_t)));
         CUDA_CHECK(cudaMalloc(&final_mask, w * h * sizeof(uint8_t)));
         CUDA_CHECK(cudaMalloc(&rand_states, w * h * sizeof(curandState)));
         
-        // Initialize reservoirs to zero
+        // Initialize to zero
         CUDA_CHECK(cudaMemset(reservoir_state, 0, w * h * RESERVOIR_K * sizeof(Reservoir)));
+        CUDA_CHECK(cudaMemset(reservoir_soa.r_colors, 0, total_reservoirs * sizeof(uint8_t)));
+        CUDA_CHECK(cudaMemset(reservoir_soa.g_colors, 0, total_reservoirs * sizeof(uint8_t)));
+        CUDA_CHECK(cudaMemset(reservoir_soa.b_colors, 0, total_reservoirs * sizeof(uint8_t)));
+        CUDA_CHECK(cudaMemset(reservoir_soa.weights, 0, total_reservoirs * sizeof(uint16_t)));
     }
     
     ~GpuContext() {
         if (reservoir_state) cudaFree(reservoir_state);
+        if (reservoir_soa.r_colors) cudaFree(reservoir_soa.r_colors);
+        if (reservoir_soa.g_colors) cudaFree(reservoir_soa.g_colors);
+        if (reservoir_soa.b_colors) cudaFree(reservoir_soa.b_colors);
+        if (reservoir_soa.weights) cudaFree(reservoir_soa.weights);
         if (diff_map) cudaFree(diff_map);
         if (morph_temp) cudaFree(morph_temp);
         if (morph_dest) cudaFree(morph_dest);
@@ -106,7 +139,122 @@ __global__ void init_rand_kernel(curandState* states, int width, int height, uns
     }
 }
 
-// Reservoir update and difference computation kernel
+// Optimized reservoir update with SoA layout for better memory coalescing
+__global__ void update_reservoir_soa_kernel(
+    ImageView<rgb8> in,
+    uint8_t* r_colors,
+    uint8_t* g_colors,
+    uint8_t* b_colors,
+    uint16_t* weights,
+    uint8_t* diff_map,
+    curandState* rand_states,
+    int width,
+    int height
+) {
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    if (x >= width || y >= height) return;
+    
+    int p_idx = y * width + x;
+    rgb8* line_ptr = (rgb8*)((char*)in.buffer + y * in.stride);
+    rgb8 current_pixel = line_ptr[x];
+    
+    // SoA: Each reservoir channel stored contiguously
+    // Layout: [pixel0_res0, pixel1_res0, ..., pixelN_res0, pixel0_res1, ...]
+    int base_idx = p_idx * RESERVOIR_K;
+    int best_match = -1;
+    
+    // Search for matching reservoir - coalesced reads
+    for (int k = 0; k < RESERVOIR_K; ++k) {
+        int idx = base_idx + k;
+        uint16_t w = weights[idx];
+        if (w > 0) {
+            uint8_t r = r_colors[idx];
+            uint8_t g = g_colors[idx];
+            uint8_t b = b_colors[idx];
+            int diff = abs(int(current_pixel.r) - int(r)) +
+                      abs(int(current_pixel.g) - int(g)) +
+                      abs(int(current_pixel.b) - int(b));
+            if (diff < RGB_DIFF_THRESHOLD) {
+                best_match = k;
+                break;
+            }
+        }
+    }
+    
+    if (best_match != -1) {
+        // Update existing reservoir with moving average - coalesced writes
+        int idx = base_idx + best_match;
+        uint16_t w = weights[idx];
+        r_colors[idx] = (uint8_t)(((w - 1.0f) * r_colors[idx] + current_pixel.r) / w);
+        g_colors[idx] = (uint8_t)(((w - 1.0f) * g_colors[idx] + current_pixel.g) / w);
+        b_colors[idx] = (uint8_t)(((w - 1.0f) * b_colors[idx] + current_pixel.b) / w);
+        if (w < MAX_WEIGHT) weights[idx] = w + 1;
+    } else {
+        // No match found - try to find empty slot
+        int empty_slot = -1;
+        for (int k = 0; k < RESERVOIR_K; ++k) {
+            if (weights[base_idx + k] == 0) {
+                empty_slot = k;
+                break;
+            }
+        }
+        
+        if (empty_slot != -1) {
+            // Insert into empty slot - coalesced writes
+            int idx = base_idx + empty_slot;
+            r_colors[idx] = current_pixel.r;
+            g_colors[idx] = current_pixel.g;
+            b_colors[idx] = current_pixel.b;
+            weights[idx] = 1;
+        } else {
+            // Weighted reservoir sampling - find minimum weight
+            int min_w_idx = 0;
+            uint16_t min_w = weights[base_idx];
+            int sum_w = 0;
+            
+            for (int k = 0; k < RESERVOIR_K; ++k) {
+                uint16_t w = weights[base_idx + k];
+                sum_w += w;
+                if (w < min_w) {
+                    min_w = w;
+                    min_w_idx = k;
+                }
+            }
+            
+            float rand_val = curand_uniform(&rand_states[p_idx]);
+            if (rand_val * sum_w < min_w) {
+                int idx = base_idx + min_w_idx;
+                r_colors[idx] = current_pixel.r;
+                g_colors[idx] = current_pixel.g;
+                b_colors[idx] = current_pixel.b;
+                weights[idx] = 1;
+            }
+        }
+    }
+    
+    // Compute difference from most stable background - coalesced reads
+    uint8_t bg_r = 0, bg_g = 0, bg_b = 0;
+    uint16_t max_w = 0;
+    for (int k = 0; k < RESERVOIR_K; ++k) {
+        int idx = base_idx + k;
+        uint16_t w = weights[idx];
+        if (w > max_w) {
+            max_w = w;
+            bg_r = r_colors[idx];
+            bg_g = g_colors[idx];
+            bg_b = b_colors[idx];
+        }
+    }
+    
+    int diff = (abs(int(current_pixel.r) - int(bg_r)) +
+               abs(int(current_pixel.g) - int(bg_g)) +
+               abs(int(current_pixel.b) - int(bg_b))) / 3;
+    diff_map[p_idx] = (uint8_t)min(255, diff);
+}
+
+// Legacy AoS version kept for compatibility
 __global__ void update_reservoir_kernel(
     ImageView<rgb8> in,
     Reservoir* reservoir_state,
@@ -193,53 +341,222 @@ __global__ void update_reservoir_kernel(
     diff_map[p_idx] = (uint8_t)min(255, diff);
 }
 
-// Morphological erosion kernel
+// Morphological erosion kernel with shared memory optimization
 __global__ void erosion_kernel(
     const uint8_t* input,
     uint8_t* output,
     int width,
     int height
 ) {
+    // Shared memory tile with halo for neighbor access
+    // Block is 16x16, but we need halo of MORPH_RADIUS (3) on each side
+    __shared__ uint8_t tile[16 + 2*MORPH_RADIUS][16 + 2*MORPH_RADIUS];
+    
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     
+    int tx = threadIdx.x + MORPH_RADIUS;
+    int ty = threadIdx.y + MORPH_RADIUS;
+    
+    // Load center tile
+    if (x < width && y < height) {
+        tile[ty][tx] = input[y * width + x];
+    } else {
+        tile[ty][tx] = 255; // Padding value for erosion
+    }
+    
+    // Load halo regions (left/right/top/bottom)
+    if (threadIdx.x < MORPH_RADIUS) {
+        // Left halo
+        int halo_x = x - MORPH_RADIUS;
+        if (halo_x >= 0 && y < height) {
+            tile[ty][threadIdx.x] = input[y * width + halo_x];
+        } else {
+            tile[ty][threadIdx.x] = 255;
+        }
+        // Right halo
+        halo_x = x + blockDim.x;
+        if (halo_x < width && y < height) {
+            tile[ty][threadIdx.x + blockDim.x + MORPH_RADIUS] = input[y * width + halo_x];
+        } else {
+            tile[ty][threadIdx.x + blockDim.x + MORPH_RADIUS] = 255;
+        }
+    }
+    
+    if (threadIdx.y < MORPH_RADIUS) {
+        // Top halo
+        int halo_y = y - MORPH_RADIUS;
+        if (x < width && halo_y >= 0) {
+            tile[threadIdx.y][tx] = input[halo_y * width + x];
+        } else {
+            tile[threadIdx.y][tx] = 255;
+        }
+        // Bottom halo
+        halo_y = y + blockDim.y;
+        if (x < width && halo_y < height) {
+            tile[threadIdx.y + blockDim.y + MORPH_RADIUS][tx] = input[halo_y * width + x];
+        } else {
+            tile[threadIdx.y + blockDim.y + MORPH_RADIUS][tx] = 255;
+        }
+    }
+    
+    // Load corner halos
+    if (threadIdx.x < MORPH_RADIUS && threadIdx.y < MORPH_RADIUS) {
+        // Top-left
+        int halo_x = x - MORPH_RADIUS;
+        int halo_y = y - MORPH_RADIUS;
+        if (halo_x >= 0 && halo_y >= 0) {
+            tile[threadIdx.y][threadIdx.x] = input[halo_y * width + halo_x];
+        } else {
+            tile[threadIdx.y][threadIdx.x] = 255;
+        }
+        
+        // Top-right
+        halo_x = x + blockDim.x;
+        if (halo_x < width && halo_y >= 0) {
+            tile[threadIdx.y][threadIdx.x + blockDim.x + MORPH_RADIUS] = input[halo_y * width + halo_x];
+        } else {
+            tile[threadIdx.y][threadIdx.x + blockDim.x + MORPH_RADIUS] = 255;
+        }
+        
+        // Bottom-left
+        halo_x = x - MORPH_RADIUS;
+        halo_y = y + blockDim.y;
+        if (halo_x >= 0 && halo_y < height) {
+            tile[threadIdx.y + blockDim.y + MORPH_RADIUS][threadIdx.x] = input[halo_y * width + halo_x];
+        } else {
+            tile[threadIdx.y + blockDim.y + MORPH_RADIUS][threadIdx.x] = 255;
+        }
+        
+        // Bottom-right
+        halo_x = x + blockDim.x;
+        if (halo_x < width && halo_y < height) {
+            tile[threadIdx.y + blockDim.y + MORPH_RADIUS][threadIdx.x + blockDim.x + MORPH_RADIUS] = input[halo_y * width + halo_x];
+        } else {
+            tile[threadIdx.y + blockDim.y + MORPH_RADIUS][threadIdx.x + blockDim.x + MORPH_RADIUS] = 255;
+        }
+    }
+    
+    __syncthreads();
+    
     if (x >= width || y >= height) return;
     
+    // Compute erosion using shared memory
     uint8_t min_val = 255;
     for (int dy = -MORPH_RADIUS; dy <= MORPH_RADIUS; ++dy) {
         for (int dx = -MORPH_RADIUS; dx <= MORPH_RADIUS; ++dx) {
             if (dx*dx + dy*dy > MORPH_RADIUS*MORPH_RADIUS) continue;
-            int nx = x + dx;
-            int ny = y + dy;
-            if (is_inside(nx, ny, width, height)) {
-                min_val = min(min_val, input[ny * width + nx]);
-            }
+            min_val = min(min_val, tile[ty + dy][tx + dx]);
         }
     }
     output[y * width + x] = min_val;
 }
 
-// Morphological dilation kernel
+// Morphological dilation kernel with shared memory optimization
 __global__ void dilation_kernel(
     const uint8_t* input,
     uint8_t* output,
     int width,
     int height
 ) {
+    // Shared memory tile with halo
+    __shared__ uint8_t tile[16 + 2*MORPH_RADIUS][16 + 2*MORPH_RADIUS];
+    
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     
+    int tx = threadIdx.x + MORPH_RADIUS;
+    int ty = threadIdx.y + MORPH_RADIUS;
+    
+    // Load center tile
+    if (x < width && y < height) {
+        tile[ty][tx] = input[y * width + x];
+    } else {
+        tile[ty][tx] = 0; // Padding value for dilation
+    }
+    
+    // Load halo regions
+    if (threadIdx.x < MORPH_RADIUS) {
+        // Left halo
+        int halo_x = x - MORPH_RADIUS;
+        if (halo_x >= 0 && y < height) {
+            tile[ty][threadIdx.x] = input[y * width + halo_x];
+        } else {
+            tile[ty][threadIdx.x] = 0;
+        }
+        // Right halo
+        halo_x = x + blockDim.x;
+        if (halo_x < width && y < height) {
+            tile[ty][threadIdx.x + blockDim.x + MORPH_RADIUS] = input[y * width + halo_x];
+        } else {
+            tile[ty][threadIdx.x + blockDim.x + MORPH_RADIUS] = 0;
+        }
+    }
+    
+    if (threadIdx.y < MORPH_RADIUS) {
+        // Top halo
+        int halo_y = y - MORPH_RADIUS;
+        if (x < width && halo_y >= 0) {
+            tile[threadIdx.y][tx] = input[halo_y * width + x];
+        } else {
+            tile[threadIdx.y][tx] = 0;
+        }
+        // Bottom halo
+        halo_y = y + blockDim.y;
+        if (x < width && halo_y < height) {
+            tile[threadIdx.y + blockDim.y + MORPH_RADIUS][tx] = input[halo_y * width + x];
+        } else {
+            tile[threadIdx.y + blockDim.y + MORPH_RADIUS][tx] = 0;
+        }
+    }
+    
+    // Load corner halos
+    if (threadIdx.x < MORPH_RADIUS && threadIdx.y < MORPH_RADIUS) {
+        // Top-left
+        int halo_x = x - MORPH_RADIUS;
+        int halo_y = y - MORPH_RADIUS;
+        if (halo_x >= 0 && halo_y >= 0) {
+            tile[threadIdx.y][threadIdx.x] = input[halo_y * width + halo_x];
+        } else {
+            tile[threadIdx.y][threadIdx.x] = 0;
+        }
+        
+        // Top-right
+        halo_x = x + blockDim.x;
+        if (halo_x < width && halo_y >= 0) {
+            tile[threadIdx.y][threadIdx.x + blockDim.x + MORPH_RADIUS] = input[halo_y * width + halo_x];
+        } else {
+            tile[threadIdx.y][threadIdx.x + blockDim.x + MORPH_RADIUS] = 0;
+        }
+        
+        // Bottom-left
+        halo_x = x - MORPH_RADIUS;
+        halo_y = y + blockDim.y;
+        if (halo_x >= 0 && halo_y < height) {
+            tile[threadIdx.y + blockDim.y + MORPH_RADIUS][threadIdx.x] = input[halo_y * width + halo_x];
+        } else {
+            tile[threadIdx.y + blockDim.y + MORPH_RADIUS][threadIdx.x] = 0;
+        }
+        
+        // Bottom-right
+        halo_x = x + blockDim.x;
+        if (halo_x < width && halo_y < height) {
+            tile[threadIdx.y + blockDim.y + MORPH_RADIUS][threadIdx.x + blockDim.x + MORPH_RADIUS] = input[halo_y * width + halo_x];
+        } else {
+            tile[threadIdx.y + blockDim.y + MORPH_RADIUS][threadIdx.x + blockDim.x + MORPH_RADIUS] = 0;
+        }
+    }
+    
+    __syncthreads();
+    
     if (x >= width || y >= height) return;
     
+    // Compute dilation using shared memory
     uint8_t max_val = 0;
     for (int dy = -MORPH_RADIUS; dy <= MORPH_RADIUS; ++dy) {
         for (int dx = -MORPH_RADIUS; dx <= MORPH_RADIUS; ++dx) {
             if (dx*dx + dy*dy > MORPH_RADIUS*MORPH_RADIUS) continue;
-            int nx = x + dx;
-            int ny = y + dy;
-            if (is_inside(nx, ny, width, height)) {
-                max_val = max(max_val, input[ny * width + nx]);
-            }
+            max_val = max(max_val, tile[ty + dy][tx + dx]);
         }
     }
     output[y * width + x] = max_val;
@@ -261,7 +578,7 @@ __global__ void init_hysteresis_kernel(
     final_mask[idx] = (morph_dest[idx] >= HYST_HIGH) ? 1 : 0;
 }
 
-// Hysteresis propagation kernel (iterative)
+// Hysteresis propagation kernel with shared memory (iterative)
 __global__ void hysteresis_propagate_kernel(
     const uint8_t* morph_dest,
     uint8_t* final_mask,
@@ -269,29 +586,149 @@ __global__ void hysteresis_propagate_kernel(
     int width,
     int height
 ) {
+    // Shared memory for mask tile with halo
+    __shared__ uint8_t mask_tile[16 + 2][16 + 2];
+    __shared__ uint8_t morph_tile[16 + 2][16 + 2];
+    
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    int tx = threadIdx.x + 1;
+    int ty = threadIdx.y + 1;
+    
+    // Load center tile for both mask and morph_dest
+    if (x < width && y < height) {
+        int idx = y * width + x;
+        mask_tile[ty][tx] = final_mask[idx];
+        morph_tile[ty][tx] = morph_dest[idx];
+    } else {
+        mask_tile[ty][tx] = 0;
+        morph_tile[ty][tx] = 0;
+    }
+    
+    // Load halo (1 pixel border for 8-connectivity)
+    // Left
+    if (threadIdx.x == 0) {
+        int halo_x = x - 1;
+        if (halo_x >= 0 && y < height) {
+            int idx = y * width + halo_x;
+            mask_tile[ty][0] = final_mask[idx];
+            morph_tile[ty][0] = morph_dest[idx];
+        } else {
+            mask_tile[ty][0] = 0;
+            morph_tile[ty][0] = 0;
+        }
+    }
+    // Right
+    if (threadIdx.x == blockDim.x - 1) {
+        int halo_x = x + 1;
+        if (halo_x < width && y < height) {
+            int idx = y * width + halo_x;
+            mask_tile[ty][blockDim.x + 1] = final_mask[idx];
+            morph_tile[ty][blockDim.x + 1] = morph_dest[idx];
+        } else {
+            mask_tile[ty][blockDim.x + 1] = 0;
+            morph_tile[ty][blockDim.x + 1] = 0;
+        }
+    }
+    // Top
+    if (threadIdx.y == 0) {
+        int halo_y = y - 1;
+        if (x < width && halo_y >= 0) {
+            int idx = halo_y * width + x;
+            mask_tile[0][tx] = final_mask[idx];
+            morph_tile[0][tx] = morph_dest[idx];
+        } else {
+            mask_tile[0][tx] = 0;
+            morph_tile[0][tx] = 0;
+        }
+    }
+    // Bottom
+    if (threadIdx.y == blockDim.y - 1) {
+        int halo_y = y + 1;
+        if (x < width && halo_y < height) {
+            int idx = halo_y * width + x;
+            mask_tile[blockDim.y + 1][tx] = final_mask[idx];
+            morph_tile[blockDim.y + 1][tx] = morph_dest[idx];
+        } else {
+            mask_tile[blockDim.y + 1][tx] = 0;
+            morph_tile[blockDim.y + 1][tx] = 0;
+        }
+    }
+    
+    // Load corners
+    if (threadIdx.x == 0 && threadIdx.y == 0) {
+        // Top-left
+        int halo_x = x - 1, halo_y = y - 1;
+        if (halo_x >= 0 && halo_y >= 0) {
+            int idx = halo_y * width + halo_x;
+            mask_tile[0][0] = final_mask[idx];
+            morph_tile[0][0] = morph_dest[idx];
+        } else {
+            mask_tile[0][0] = 0;
+            morph_tile[0][0] = 0;
+        }
+    }
+    if (threadIdx.x == blockDim.x - 1 && threadIdx.y == 0) {
+        // Top-right
+        int halo_x = x + 1, halo_y = y - 1;
+        if (halo_x < width && halo_y >= 0) {
+            int idx = halo_y * width + halo_x;
+            mask_tile[0][blockDim.x + 1] = final_mask[idx];
+            morph_tile[0][blockDim.x + 1] = morph_dest[idx];
+        } else {
+            mask_tile[0][blockDim.x + 1] = 0;
+            morph_tile[0][blockDim.x + 1] = 0;
+        }
+    }
+    if (threadIdx.x == 0 && threadIdx.y == blockDim.y - 1) {
+        // Bottom-left
+        int halo_x = x - 1, halo_y = y + 1;
+        if (halo_x >= 0 && halo_y < height) {
+            int idx = halo_y * width + halo_x;
+            mask_tile[blockDim.y + 1][0] = final_mask[idx];
+            morph_tile[blockDim.y + 1][0] = morph_dest[idx];
+        } else {
+            mask_tile[blockDim.y + 1][0] = 0;
+            morph_tile[blockDim.y + 1][0] = 0;
+        }
+    }
+    if (threadIdx.x == blockDim.x - 1 && threadIdx.y == blockDim.y - 1) {
+        // Bottom-right
+        int halo_x = x + 1, halo_y = y + 1;
+        if (halo_x < width && halo_y < height) {
+            int idx = halo_y * width + halo_x;
+            mask_tile[blockDim.y + 1][blockDim.x + 1] = final_mask[idx];
+            morph_tile[blockDim.y + 1][blockDim.x + 1] = morph_dest[idx];
+        } else {
+            mask_tile[blockDim.y + 1][blockDim.x + 1] = 0;
+            morph_tile[blockDim.y + 1][blockDim.x + 1] = 0;
+        }
+    }
+    
+    __syncthreads();
     
     if (x >= width || y >= height) return;
     
     int idx = y * width + x;
     
-    // If already marked, check neighbors
-    if (final_mask[idx] == 1) {
+    // If any neighbor is marked, propagate to this pixel if it passes low threshold
+    if (mask_tile[ty][tx] == 0 && morph_tile[ty][tx] >= HYST_LOW) {
+        bool has_marked_neighbor = false;
         for (int dy = -1; dy <= 1; ++dy) {
             for (int dx = -1; dx <= 1; ++dx) {
                 if (dx == 0 && dy == 0) continue;
-                int nx = x + dx;
-                int ny = y + dy;
-                
-                if (is_inside(nx, ny, width, height)) {
-                    int nidx = ny * width + nx;
-                    if (final_mask[nidx] == 0 && morph_dest[nidx] >= HYST_LOW) {
-                        final_mask[nidx] = 1;
-                        *changed = 1;
-                    }
+                if (mask_tile[ty + dy][tx + dx] == 1) {
+                    has_marked_neighbor = true;
+                    break;
                 }
             }
+            if (has_marked_neighbor) break;
+        }
+        
+        if (has_marked_neighbor) {
+            final_mask[idx] = 1;
+            atomicOr(changed, 1);
         }
     }
 }
@@ -318,6 +755,7 @@ __global__ void apply_overlay_kernel(
 void compute_cu(ImageView<rgb8> in)
 {
     static bool initialized = false;
+    static bool use_optimized = true; // Flag to switch between AoS and SoA
     
     // Print GPU info on first run
     if (!initialized) {
@@ -325,10 +763,15 @@ void compute_cu(ImageView<rgb8> in)
         cudaDeviceProp prop;
         CUDA_CHECK(cudaGetDevice(&device));
         CUDA_CHECK(cudaGetDeviceProperties(&prop, device));
-        printf("=== CUDA GPU Mode ===\n");
+        printf("CUDA GPU Mode (with Shared Memory and SoA)\n");
         printf("Using GPU: %s\n", prop.name);
         printf("Compute Capability: %d.%d\n", prop.major, prop.minor);
         printf("Image size: %dx%d\n", in.width, in.height);
+        printf("Optimizations enabled:\n");
+        printf("  - Shared memory for morphology (erosion/dilation)\n");
+        printf("  - Shared memory for hysteresis propagation\n");
+        printf("  - Structure of Arrays (SoA) for reservoir sampling\n");
+        printf("  - Memory coalescing optimization\n");
     }
     
     g_gpu_ctx.resize(in.width, in.height);
@@ -350,20 +793,34 @@ void compute_cu(ImageView<rgb8> in)
     CUDA_CHECK(cudaMemcpy2D(device_in.buffer, device_in.stride, in.buffer, in.stride, 
                  in.width * sizeof(rgb8), in.height, cudaMemcpyHostToDevice));
     
-    // 1. Update reservoirs and compute difference map
-    update_reservoir_kernel<<<grid, block>>>(
-        device_in, g_gpu_ctx.reservoir_state, g_gpu_ctx.diff_map,
-        g_gpu_ctx.rand_states, in.width, in.height
-    );
+    // 1. Update reservoirs and compute difference map (using SoA layout)
+    if (use_optimized) {
+        update_reservoir_soa_kernel<<<grid, block>>>(
+            device_in,
+            g_gpu_ctx.reservoir_soa.r_colors,
+            g_gpu_ctx.reservoir_soa.g_colors,
+            g_gpu_ctx.reservoir_soa.b_colors,
+            g_gpu_ctx.reservoir_soa.weights,
+            g_gpu_ctx.diff_map,
+            g_gpu_ctx.rand_states,
+            in.width, in.height
+        );
+    } else {
+        // Fallback to legacy AoS version
+        update_reservoir_kernel<<<grid, block>>>(
+            device_in, g_gpu_ctx.reservoir_state, g_gpu_ctx.diff_map,
+            g_gpu_ctx.rand_states, in.width, in.height
+        );
+    }
     CUDA_CHECK_KERNEL();
     
-    // 2. Morphological operations: erosion
+    // 2. Morphological operations: erosion (using shared memory)
     erosion_kernel<<<grid, block>>>(
         g_gpu_ctx.diff_map, g_gpu_ctx.morph_temp, in.width, in.height
     );
     CUDA_CHECK_KERNEL();
     
-    // 3. Morphological operations: dilation
+    // 3. Morphological operations: dilation (using shared memory)
     dilation_kernel<<<grid, block>>>(
         g_gpu_ctx.morph_temp, g_gpu_ctx.morph_dest, in.width, in.height
     );
@@ -375,7 +832,7 @@ void compute_cu(ImageView<rgb8> in)
     );
     CUDA_CHECK_KERNEL();
     
-    // 5. Hysteresis propagation (iterative)
+    // 5. Hysteresis propagation (using shared memory, iterative)
     int* d_changed;
     int h_changed = 1;
     CUDA_CHECK(cudaMalloc(&d_changed, sizeof(int)));

@@ -1,0 +1,8 @@
+Resolution,Version,Time_s,FPS,Speedup,SM_Usage,Memory_MB
+776x1380,Baseline,13.42,19.97,1.00,95,1031
+776x1380,Optimized_Run1,8.24,32.52,1.63,90,1545
+776x1380,Optimized_Run2,7.34,36.51,1.83,90,1545
+776x1380,Optimized_Run3,7.58,35.36,1.77,90,1545
+776x1380,Optimized_Avg,7.72,34.72,1.74,90,1545
+1920x1080,Baseline,18.18,20.35,1.00,95,1537
+1920x1080,Optimized,21.11,17.52,0.86,32,2100
